@@ -1,0 +1,5 @@
+{
+  "name": "StageCraft AI",
+  "description": "A professional concert stage design generator powered by Gemini. Visualize and conceptualize stage layouts, lighting rigs, and set designs based on musical genre and atmosphere.",
+  "requestFramePermissions": []
+}
