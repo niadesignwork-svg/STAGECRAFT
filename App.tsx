@@ -25,17 +25,15 @@ const App: React.FC = () => {
   const [currentDesign, setCurrentDesign] = useState<GeneratedDesign | null>(null);
   const [savedDesigns, setSavedDesigns] = useState<GeneratedDesign[]>([]);
   const [isLibraryOpen, setIsLibraryOpen] = useState(false);
-  const [autoSave, setAutoSave] = useState(true); // Auto-save enabled by default
+  const [autoSave, setAutoSave] = useState(true); 
   
   const [isGenerating, setIsGenerating] = useState(false);
   const [isEditingImage, setIsEditingImage] = useState(false);
   const [isVideoGenerating, setIsVideoGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Mobile UX state
   const [showMobileControls, setShowMobileControls] = useState(true);
 
-  // Load library on mount (Async)
   useEffect(() => {
     const loadLibrary = async () => {
       try {
@@ -48,10 +46,8 @@ const App: React.FC = () => {
     loadLibrary();
   }, []);
 
-  // Helper to update current design AND save to library (conditionally)
   const updateDesignState = async (design: GeneratedDesign, forceSave = false) => {
     setCurrentDesign(design);
-    
     if (autoSave || forceSave) {
       try {
         const updatedList = await saveDesignToLibrary(design);
@@ -65,11 +61,8 @@ const App: React.FC = () => {
 
   const handleManualSave = async (asCopy = false) => {
     if (!currentDesign) return;
-    
     let designToSave = currentDesign;
-    
     if (asCopy) {
-      // Clone as new ID
       designToSave = {
         ...currentDesign,
         id: crypto.randomUUID(),
@@ -77,7 +70,6 @@ const App: React.FC = () => {
         timestamp: Date.now()
       };
     }
-
     await updateDesignState(designToSave, true);
   };
 
@@ -87,7 +79,6 @@ const App: React.FC = () => {
         return;
     }
 
-    // Auto-collapse controls on mobile when generating to show results
     if (window.innerWidth < 1024) {
       setShowMobileControls(false);
     }
@@ -96,16 +87,10 @@ const App: React.FC = () => {
     setError(null);
 
     try {
-      // SEQUENTIAL EXECUTION to reduce Rate Limits (Quota Exceeded)
-      // First generate images (Higher priority/cost)
       const images = await generateStageImage(config);
-      
-      // Then generate text details
       const textDetails = await generateStageDescription(config);
-
       const batchTimestamp = Date.now();
 
-      // Create separate design objects for each generated image
       const newDesigns: GeneratedDesign[] = images.map((img, index) => ({
         id: crypto.randomUUID(),
         imageUrl: img,
@@ -116,30 +101,26 @@ const App: React.FC = () => {
         timestamp: batchTimestamp + index, 
       }));
 
-      // Save all to library ONLY if autoSave is ON
       if (autoSave) {
         await Promise.all(newDesigns.map(d => saveDesignToLibrary(d)));
         const updatedLibrary = await getSavedDesigns();
         setSavedDesigns(updatedLibrary);
       }
 
-      // Determine display state
       if (newDesigns.length > 1) {
-        const compositeDesign: GeneratedDesign = {
-          ...newDesigns[0], 
-          variants: images, 
-        };
-        setCurrentDesign(compositeDesign);
+        setCurrentDesign({ ...newDesigns[0], variants: images });
       } else {
         setCurrentDesign(newDesigns[0]);
       }
-
     } catch (err: any) {
       console.error(err);
-      if (err.message?.includes('429') || err.message?.toLowerCase().includes('quota')) {
-         setError("API 配額已滿，系統將自動重試但最終失敗。請稍後再試或減少生成張數。(API Quota Exceeded)");
+      const msg = err.message || "";
+      if (msg.includes('429') || msg.toLowerCase().includes('quota')) {
+         setError("API 配額已滿 (429 Quota Exceeded)。請稍後再試或減少張數。");
+      } else if (msg.toLowerCase().includes('safety')) {
+         setError("設計內容被安全過濾器攔截。請嘗試修改元素或氛圍。");
       } else {
-         setError("生成設計失敗。請確保您的 API Key 正確。(Failed to generate)");
+         setError(`生成失敗: ${msg || "請檢查網路與 API Key。"}`);
       }
     } finally {
       setIsGenerating(false);
@@ -148,31 +129,25 @@ const App: React.FC = () => {
 
   const handleUpscale = useCallback(async (variantUrl: string) => {
     setIsEditingImage(true);
-    
-    // Find the actual saved design that matches this variant (if it exists in library)
     let targetDesign = savedDesigns.find(d => d.imageUrl === variantUrl);
-
-    // Fallback: If not in library (because auto-save was off), construct from current temp state
     if (!targetDesign) {
         if (currentDesign && (currentDesign.imageUrl === variantUrl || (currentDesign.variants && currentDesign.variants.includes(variantUrl)))) {
              targetDesign = {
                 ...currentDesign,
-                id: crypto.randomUUID(), // New ID since it's effectively a new realization
+                id: crypto.randomUUID(),
                 imageUrl: variantUrl,
                 variants: [],
                 imageHistory: [variantUrl],
                 historyIndex: 0
              };
         } else {
-             setError("無法找到原始設計檔案 (Original design not found)");
+             setError("無法找到設計檔案");
              setIsEditingImage(false);
              return;
         }
     }
-
     try {
         const upscaledUrl = await upscaleStageImage(variantUrl);
-
         const updatedDesign: GeneratedDesign = {
             ...targetDesign,
             imageUrl: upscaledUrl,
@@ -180,26 +155,9 @@ const App: React.FC = () => {
             imageHistory: [...targetDesign.imageHistory, upscaledUrl],
             historyIndex: targetDesign.imageHistory.length 
         };
-        
         await updateDesignState(updatedDesign);
-
     } catch (err: any) {
-        console.error(err);
-        if (err.message?.includes('429') || err.message?.toLowerCase().includes('quota')) {
-            setError("API 配額已滿，無法放大圖片。(API Quota Exceeded for Upscaling)");
-        } else {
-            setError("放大圖片失敗，請使用原圖。(Failed to upscale, falling back to original)");
-        }
-        
-        // Ensure UI stays consistent even if upscale fails
-        const updatedDesign: GeneratedDesign = {
-            ...targetDesign,
-            imageUrl: variantUrl,
-            variants: [],
-            imageHistory: [...targetDesign.imageHistory],
-            historyIndex: targetDesign.historyIndex
-        };
-        await updateDesignState(updatedDesign);
+        setError(`放大失敗: ${err.message || "請重試"}`);
     } finally {
         setIsEditingImage(false);
     }
@@ -207,33 +165,21 @@ const App: React.FC = () => {
 
   const handleEditImage = useCallback(async (instruction: string, maskBase64?: string) => {
     if (!currentDesign?.imageUrl) return;
-    if (!process.env.API_KEY) return;
-
     setIsEditingImage(true);
     setError(null);
-
     try {
       const newImageUrl = await editStageImage(currentDesign.imageUrl, instruction, maskBase64);
-      
       const prev = currentDesign;
       const newHistory = [...prev.imageHistory.slice(0, prev.historyIndex + 1), newImageUrl];
-      
       const updatedDesign = {
         ...prev,
         imageUrl: newImageUrl,
         imageHistory: newHistory,
         historyIndex: newHistory.length - 1
       };
-
       await updateDesignState(updatedDesign);
-      
     } catch (err: any) {
-      console.error(err);
-      if (err.message?.includes('429') || err.message?.toLowerCase().includes('quota')) {
-          setError("API 配額已滿，無法調整圖片。(API Quota Exceeded for Editing)");
-      } else {
-          setError("圖片調整失敗，請稍後重試。(Failed to edit image)");
-      }
+      setError(`調整失敗: ${err.message}`);
     } finally {
       setIsEditingImage(false);
     }
@@ -241,33 +187,21 @@ const App: React.FC = () => {
 
   const handleViewpointChange = useCallback(async (newViewpoint: StageViewpoint) => {
     if (!currentDesign?.imageUrl) return;
-    if (!process.env.API_KEY) return;
-
     setIsEditingImage(true);
     setError(null);
-
     try {
       const newImageUrl = await generateViewpointVariant(currentDesign.imageUrl, newViewpoint);
-      
       const prev = currentDesign;
       const newHistory = [...prev.imageHistory.slice(0, prev.historyIndex + 1), newImageUrl];
-      
       const updatedDesign = {
         ...prev,
         imageUrl: newImageUrl,
         imageHistory: newHistory,
         historyIndex: newHistory.length - 1
       };
-
       await updateDesignState(updatedDesign);
-      
     } catch (err: any) {
-      console.error(err);
-      if (err.message?.includes('429') || err.message?.toLowerCase().includes('quota')) {
-          setError("API 配額已滿，無法轉換視角。(API Quota Exceeded for Viewpoint)");
-      } else {
-          setError("轉換視角失敗，請稍後重試。(Failed to change perspective)");
-      }
+      setError(`視角轉換失敗: ${err.message}`);
     } finally {
       setIsEditingImage(false);
     }
@@ -275,55 +209,33 @@ const App: React.FC = () => {
 
   const handleGenerateSimilar = useCallback(async () => {
     if (!currentDesign?.imageUrl) return;
-    if (!process.env.API_KEY) return;
-
-    setIsGenerating(true); // Switch to full generation loader for batch processing
+    setIsGenerating(true);
     setError(null);
-
     try {
-      // Use config.imageCount to determine how many variations to generate (1-4)
       const images = await generateSimilarVariant(currentDesign.imageUrl, config.imageCount);
-      
       const batchTimestamp = Date.now();
-      
-      // Create independent design entries for each result so they are saved to library
       const newDesigns: GeneratedDesign[] = images.map((img, index) => ({
         ...currentDesign,
         id: crypto.randomUUID(),
-        conceptTitle: `${currentDesign.conceptTitle} (Variant ${index + 1})`,
+        conceptTitle: `${currentDesign.conceptTitle} (變體 ${index + 1})`,
         imageUrl: img,
-        variants: [], // Initially empty, we group them for display below
+        variants: [],
         imageHistory: [img],
         historyIndex: 0,
         timestamp: batchTimestamp + index,
-        folder: undefined
       }));
-
-      // Save all to library if autoSave is ON
       if (autoSave) {
         await Promise.all(newDesigns.map(d => saveDesignToLibrary(d)));
         const updatedLibrary = await getSavedDesigns();
         setSavedDesigns(updatedLibrary);
       }
-
-      // If multiple, show grid. If single, show directly.
       if (newDesigns.length > 1) {
-        const compositeDesign: GeneratedDesign = {
-          ...newDesigns[0], 
-          variants: images, // Trigger Grid View
-        };
-        setCurrentDesign(compositeDesign);
+        setCurrentDesign({ ...newDesigns[0], variants: images });
       } else {
         setCurrentDesign(newDesigns[0]);
       }
-      
     } catch (err: any) {
-      console.error(err);
-      if (err.message?.includes('429') || err.message?.toLowerCase().includes('quota')) {
-          setError("API 配額已滿，生成相似圖片失敗。(API Quota Exceeded for Variants)");
-      } else {
-          setError("生成相似圖片失敗 (Failed to generate similar variant)");
-      }
+      setError(`生成變體失敗: ${err.message}`);
     } finally {
       setIsGenerating(false);
     }
@@ -331,35 +243,20 @@ const App: React.FC = () => {
 
   const handleGenerateVideo = useCallback(async () => {
     if (!currentDesign?.imageUrl) return;
-    
-    // Mandatory API Key selection check for Veo
     if (window.aistudio && window.aistudio.hasSelectedApiKey) {
       const hasKey = await window.aistudio.hasSelectedApiKey();
       if (!hasKey && window.aistudio.openSelectKey) {
         await window.aistudio.openSelectKey();
       }
     }
-
     setIsVideoGenerating(true);
     setError(null);
-
     try {
       const videoDataUrl = await generateStageVideo(currentDesign.imageUrl);
-      
-      const updatedDesign: GeneratedDesign = {
-        ...currentDesign,
-        videoUrl: videoDataUrl,
-      };
-
+      const updatedDesign: GeneratedDesign = { ...currentDesign, videoUrl: videoDataUrl };
       await updateDesignState(updatedDesign);
-      
     } catch (err: any) {
-      console.error(err);
-      if (err.message?.includes('429') || err.message?.toLowerCase().includes('quota')) {
-          setError("API 配額已滿，無法生成影片。(API Quota Exceeded for Video)");
-      } else {
-          setError("生成動態影片失敗，請確認 API 額度或稍後重試。 (Failed to generate video)");
-      }
+      setError(`影片生成失敗: ${err.message}`);
     } finally {
       setIsVideoGenerating(false);
     }
@@ -367,34 +264,20 @@ const App: React.FC = () => {
 
   const handleUndo = async () => {
     if (!currentDesign || currentDesign.historyIndex <= 0) return;
-    
     const newIndex = currentDesign.historyIndex - 1;
-    const updatedDesign = {
-      ...currentDesign,
-      imageUrl: currentDesign.imageHistory[newIndex],
-      historyIndex: newIndex
-    };
-    await updateDesignState(updatedDesign);
+    await updateDesignState({ ...currentDesign, imageUrl: currentDesign.imageHistory[newIndex], historyIndex: newIndex });
   };
 
   const handleRedo = async () => {
     if (!currentDesign || currentDesign.historyIndex >= currentDesign.imageHistory.length - 1) return;
-    
     const newIndex = currentDesign.historyIndex + 1;
-    const updatedDesign = {
-      ...currentDesign,
-      imageUrl: currentDesign.imageHistory[newIndex],
-      historyIndex: newIndex
-    };
-    await updateDesignState(updatedDesign);
+    await updateDesignState({ ...currentDesign, imageUrl: currentDesign.imageHistory[newIndex], historyIndex: newIndex });
   };
 
   const handleDeleteDesign = async (id: string) => {
     const newList = await deleteDesignFromLibrary(id);
     setSavedDesigns(newList);
-    if (currentDesign?.id === id) {
-      setCurrentDesign(null);
-    }
+    if (currentDesign?.id === id) setCurrentDesign(null);
   };
 
   const handleUpdateDesignFolder = async (id: string, folder?: string) => {
@@ -414,9 +297,7 @@ const App: React.FC = () => {
 
   const handleSelectDesign = (design: GeneratedDesign) => {
     setCurrentDesign(design);
-    if (window.innerWidth < 1024) {
-      setShowMobileControls(false);
-    }
+    if (window.innerWidth < 1024) setShowMobileControls(false);
   };
 
   return (
@@ -436,61 +317,39 @@ const App: React.FC = () => {
               STAGE<span className="text-transparent bg-clip-text bg-gradient-to-r from-neon-blue to-neon-purple">CRAFT</span>
             </h1>
           </div>
-          
           <div className="flex items-center gap-4">
-            <div className="hidden md:block text-xs font-medium text-slate-500 border border-slate-800 rounded-full px-3 py-1">
-              Powered by Gemini 2.5 & Imagen 4
-            </div>
-            
             <button 
               onClick={() => setIsLibraryOpen(true)}
               className="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-lg text-sm font-semibold transition-all border border-slate-700 hover:border-neon-blue/50"
             >
               <FolderOpen size={18} />
               <span className="hidden sm:inline">收藏庫 (Library)</span>
-              {savedDesigns.length > 0 && (
-                <span className="bg-neon-blue text-black text-[10px] px-1.5 rounded-full font-bold">
-                  {savedDesigns.length}
-                </span>
-              )}
+              {savedDesigns.length > 0 && <span className="bg-neon-blue text-black text-[10px] px-1.5 rounded-full font-bold">{savedDesigns.length}</span>}
             </button>
           </div>
         </div>
       </header>
 
       <main className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        
         {error && (
           <div className="mb-6 bg-red-500/10 border border-red-500/50 text-red-200 p-4 rounded-lg flex items-center gap-3 animate-in slide-in-from-top-2">
             <AlertTriangle size={20} />
             {error}
           </div>
         )}
-
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
           <div className="lg:col-span-4 xl:col-span-3 lg:h-[calc(100vh-8rem)] lg:sticky lg:top-24 z-20 flex flex-col gap-4">
-            
             <button 
               onClick={() => setShowMobileControls(!showMobileControls)}
               className="lg:hidden w-full bg-slate-800/90 backdrop-blur border border-slate-700 p-4 rounded-xl flex items-center justify-between text-white font-bold shadow-lg active:scale-[0.98] transition-transform"
             >
-              <span className="flex items-center gap-2 text-neon-blue">
-                <SlidersHorizontal size={20} /> 
-                {showMobileControls ? '收起設計參數 (Collapse)' : '展開設計參數 (Design Settings)'}
-              </span>
+              <span className="flex items-center gap-2 text-neon-blue"><SlidersHorizontal size={20} /> {showMobileControls ? '收起設計參數' : '展開設計參數'}</span>
               {showMobileControls ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
             </button>
-
             <div className={`${showMobileControls ? 'block' : 'hidden'} lg:block h-full transition-all duration-300`}>
-              <Controls 
-                config={config} 
-                onChange={setConfig} 
-                isGenerating={isGenerating} 
-                onGenerate={handleGenerate} 
-              />
+              <Controls config={config} onChange={setConfig} isGenerating={isGenerating} onGenerate={handleGenerate} />
             </div>
           </div>
-
           <div className="lg:col-span-8 xl:col-span-9 min-h-[600px]">
             <ResultDisplay 
               design={currentDesign} 
@@ -513,16 +372,7 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      <LibraryDrawer 
-        isOpen={isLibraryOpen} 
-        onClose={() => setIsLibraryOpen(false)}
-        designs={savedDesigns}
-        onSelect={handleSelectDesign}
-        onDelete={handleDeleteDesign}
-        onUpdateDesign={handleUpdateDesignFolder}
-        onDeleteFolder={handleDeleteFolderWithSync}
-        currentId={currentDesign?.id}
-      />
+      <LibraryDrawer isOpen={isLibraryOpen} onClose={() => setIsLibraryOpen(false)} designs={savedDesigns} onSelect={handleSelectDesign} onDelete={handleDeleteDesign} onUpdateDesign={handleUpdateDesignFolder} onDeleteFolder={handleDeleteFolderWithSync} currentId={currentDesign?.id} />
     </div>
   );
 };
